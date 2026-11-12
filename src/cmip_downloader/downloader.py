@@ -269,6 +269,17 @@ class CMIPDownloader:
             f"region={self.region_name!r}, bbox={self.bbox}>"
         )
 
+    @property
+    def _workers(self) -> int:
+        """Threads used to open, load and write datasets.
+
+        Cloud stores are read over the network and gain from parallel loads.
+        ESGF data is subset from local NetCDF files, and the HDF5 library
+        underneath is not thread-safe, so those are handled one at a time
+        (the ESGF downloads themselves still run in parallel).
+        """
+        return 1 if self._esgf is not None else self.max_workers
+
     # ------------------------------------------------------------------ planning
     def _subset(self, key, opener, variable: str) -> xr.Dataset:
         """Open a dataset and apply the spatial and vertical selection (lazy)."""
@@ -338,8 +349,8 @@ class CMIPDownloader:
         tasks: list[_Task] = []
         paths: list[Path] = []
         self._last_plan = []
-        # Opening a store is a few small requests; do all of them at once.
-        with ThreadPoolExecutor(self.max_workers) as pool:
+        # Opening a cloud store is a few small requests; do all of them at once.
+        with ThreadPoolExecutor(self._workers) as pool:
             for row, (t, p) in zip(rows, pool.map(lambda r: self._plan_dataset(r, start, stop), rows)):
                 tasks += t
                 paths += p
@@ -411,7 +422,7 @@ class CMIPDownloader:
         if dry_run:
             return paths
         done = 0
-        with ThreadPoolExecutor(self.max_workers) as pool:
+        with ThreadPoolExecutor(self._workers) as pool:
             futures = {pool.submit(self._run, t): t for t in tasks}
             for fut in as_completed(futures):
                 for path in fut.result():
