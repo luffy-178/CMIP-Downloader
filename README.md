@@ -58,19 +58,16 @@ saving comes mainly from the selection in time, variable and depth.
 ## Installation
 
 ```bash
-pip install "cmip-downloader[esgf]"
+pip install cmip-downloader
 ```
 
-Leave out `[esgf]` if you only need CMIP6 from the cloud. For the development version:
+This includes everything needed for all CMIP phases. To read CMIP6 from the AWS mirror
+instead of Google Cloud, add the `aws` extra: `pip install "cmip-downloader[aws]"`.
+
+For the development version:
 
 ```bash
-pip install "cmip-downloader[esgf] @ git+https://github.com/luffy-178/CMIP-Downloader.git"
-```
-
-From a clone of the repository:
-
-```bash
-pip install -e ".[esgf]"     # extras: esgf, aws, all, dev
+pip install git+https://github.com/luffy-178/CMIP-Downloader.git
 ```
 
 Python 3.10 or later is required.

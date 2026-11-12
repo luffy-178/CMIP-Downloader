@@ -133,7 +133,7 @@ def _new_catalog(raw_cache=None, num_threads=None):
         import intake_esgf
     except ImportError as err:  # pragma: no cover - exercised only without the extra
         raise ImportError(
-            "The ESGF back end needs intake-esgf. Install it with: pip install 'cmip-downloader[esgf]'"
+            "The ESGF back end needs intake-esgf. Install it with: pip install intake-esgf"
         ) from err
     settings = {}
     if raw_cache is not None:

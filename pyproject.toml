@@ -24,6 +24,7 @@ dependencies = [
     "dask",
     "fsspec",
     "gcsfs",
+    "intake-esgf",
     "netCDF4",
     "cftime",
     "pandas>=2",
@@ -31,9 +32,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-esgf = ["intake-esgf"]
+esgf = []  # kept so the 0.2.0 install command still works; ESGF support is now built in
 aws = ["s3fs"]
-all = ["intake-esgf", "s3fs"]
+all = ["s3fs"]
 dev = ["pytest", "ruff"]
 
 [project.urls]

@@ -3,5 +3,5 @@
 from .catalog import load_catalog, search
 from .downloader import CMIP6Downloader, CMIPDownloader
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = ["CMIP6Downloader", "CMIPDownloader", "__version__", "load_catalog", "search"]

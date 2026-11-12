@@ -1,7 +1,4 @@
-"""Download CMIP5 SST for the west coast of India from ESGF.
-
-Needs the ESGF extra: pip install "cmip-downloader[esgf]"
-"""
+"""Download CMIP5 SST for the west coast of India from ESGF."""
 
 import logging
 
