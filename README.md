@@ -40,7 +40,7 @@ the transfer saving comes mainly from the selection in time, variable and depth.
 ## Installation
 
 ```bash
-pip install git+https://github.com/<your-username>/cmip6-downloader.git
+pip install git+https://github.com/luffy-178/CMIP-Downloader.git
 ```
 
 or, from a clone of the repository:
