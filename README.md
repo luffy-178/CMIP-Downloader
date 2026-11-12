@@ -58,10 +58,16 @@ saving comes mainly from the selection in time, variable and depth.
 ## Installation
 
 ```bash
+pip install "cmip-downloader[esgf]"
+```
+
+Leave out `[esgf]` if you only need CMIP6 from the cloud. For the development version:
+
+```bash
 pip install "cmip-downloader[esgf] @ git+https://github.com/luffy-178/CMIP-Downloader.git"
 ```
 
-Leave out `[esgf]` if you only need CMIP6 from the cloud. From a clone of the repository:
+From a clone of the repository:
 
 ```bash
 pip install -e ".[esgf]"     # extras: esgf, aws, all, dev
