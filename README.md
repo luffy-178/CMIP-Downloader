@@ -3,7 +3,6 @@
 A lightweight and fast downloader for **regional subsets of CMIP6 data** from the public
 cloud mirrors (Google Cloud and AWS), built on `xarray`, `zarr` and `fsspec`.
 
-It is the CMIP6 counterpart of [`era5-downloader`](https://pypi.org/project/era5-downloader/):
 you describe the variables, models, region and period you need, and you get tidy NetCDF
 files on disk. No ESGF account, no wget scripts, no downloading of global files only to
 cut out one basin afterwards.
