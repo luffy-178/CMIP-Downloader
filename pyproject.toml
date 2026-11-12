@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cmip6-downloader"
+dynamic = ["version"]
+description = "A lightweight and fast downloader for regional subsets of CMIP6 data from the Google Cloud and AWS mirrors."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Hari" }]
+keywords = ["cmip6", "climate", "ocean", "xarray", "zarr", "pangeo"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Oceanography",
+]
+dependencies = [
+    "xarray>=2025.1",
+    "zarr>=2.18",
+    "dask",
+    "fsspec",
+    "gcsfs",
+    "netCDF4",
+    "cftime",
+    "pandas>=2",
+    "numpy",
+]
+
+[project.optional-dependencies]
+aws = ["s3fs"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+cmip6-download = "cmip6_downloader.cli:main"
+
+[tool.hatch.version]
+path = "src/cmip6_downloader/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmip6_downloader"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
