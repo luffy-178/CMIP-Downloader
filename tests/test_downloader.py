@@ -2,12 +2,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import cmip6_downloader.downloader as dl_mod
-from cmip6_downloader import CMIP6Downloader, search
-from cmip6_downloader.catalog import member_sort_key, select_default
-from cmip6_downloader.cli import main
-from cmip6_downloader.downloader import _File, group_by_chunk, split_periods
-from cmip6_downloader.subset import parse_time, subset_bbox, subset_levels
+import cmip_downloader.downloader as dl_mod
+from cmip_downloader import CMIPDownloader, search
+from cmip_downloader.catalog import member_sort_key, select_default
+from cmip_downloader.cli import main
+from cmip_downloader.downloader import _File, group_by_chunk, split_periods
+from cmip_downloader.subset import parse_time, subset_bbox, subset_levels
 
 WCI = (65, 5, 80, 25)
 
@@ -42,7 +42,7 @@ def test_default_member_and_grid(stores):
 
 def test_no_match_raises(stores):
     with pytest.raises(LookupError):
-        CMIP6Downloader("zos", catalog=stores[0])
+        CMIPDownloader("zos", catalog=stores[0])
 
 
 # ------------------------------------------------------------------ subsetting
@@ -105,7 +105,7 @@ def test_group_by_chunk_merges_files_sharing_a_chunk():
 # ------------------------------------------------------------------- downloads
 def test_download_values_match_source(stores, tmp_path):
     cat, truth = stores
-    d = CMIP6Downloader("tos", source_id="MODEL-A", catalog=cat, bbox_WSEN=WCI,
+    d = CMIPDownloader("tos", source_id="MODEL-A", catalog=cat, bbox_WSEN=WCI,
                         region_name="wci", dest_path=template(tmp_path))
     paths = d.download(slice("2001", "2002"))
     assert [p.name for p in paths] == ["tos_r1i1p1f1_wci_2001.nc", "tos_r1i1p1f1_wci_2002.nc"]
@@ -121,25 +121,25 @@ def test_download_resumes_and_loads_shared_chunk_once(stores, tmp_path, monkeypa
     cat, _ = stores
     kw = {"source_id": "MODEL-A", "catalog": cat, "bbox_WSEN": WCI, "dest_path": template(tmp_path)}
     calls = []
-    real = dl_mod.CMIP6Downloader._run
-    monkeypatch.setattr(dl_mod.CMIP6Downloader, "_run", lambda s, t: calls.append(t) or real(s, t))
+    real = dl_mod.CMIPDownloader._run
+    monkeypatch.setattr(dl_mod.CMIPDownloader, "_run", lambda s, t: calls.append(t) or real(s, t))
 
-    paths = CMIP6Downloader("tos", **kw).download()
+    paths = CMIPDownloader("tos", **kw).download()
     assert len(paths) == 4 and all(p.exists() for p in paths)
     assert len(calls) < 4  # yearly files sharing 30-step chunks were loaded together
 
     calls.clear()
-    assert CMIP6Downloader("tos", **kw).download() == paths
+    assert CMIPDownloader("tos", **kw).download() == paths
     assert calls == []  # nothing left to do
 
     paths[2].unlink()
-    CMIP6Downloader("tos", **kw).download()
+    CMIPDownloader("tos", **kw).download()
     assert paths[2].exists() and sum(len(t.files) for t in calls) == 1
 
 
 def test_download_curvilinear_levels_month_split(stores, tmp_path):
     cat, truth = stores
-    d = CMIP6Downloader("thetao", source_id="MODEL-B", catalog=cat, bbox_WSEN=WCI,
+    d = CMIPDownloader("thetao", source_id="MODEL-B", catalog=cat, bbox_WSEN=WCI,
                         level_range=(0, 200), split="month", dest_path=template(tmp_path))
     paths = d.download("2000-02")
     assert [p.name for p in paths] == ["thetao_r1i1p1f1_region_200002.nc"]
@@ -150,24 +150,24 @@ def test_download_curvilinear_levels_month_split(stores, tmp_path):
 
 
 def test_fixed_field(stores, tmp_path):
-    d = CMIP6Downloader("deptho", table_id="Ofx", catalog=stores[0], dest_path=template(tmp_path))
+    d = CMIPDownloader("deptho", table_id="Ofx", catalog=stores[0], dest_path=template(tmp_path))
     (path,) = d.download(slice("2000", "2001"))
     assert path.name == "deptho_r1i1p1f1_global_fx.nc" and open_nc(path).deptho.shape == (180, 360)
 
 
 def test_all_members_and_fetch_local(stores, tmp_path):
     cat, _ = stores
-    d = CMIP6Downloader("tos", source_id="MODEL-A", member_id="all", grid_label="gn", catalog=cat,
+    d = CMIPDownloader("tos", source_id="MODEL-A", member_id="all", grid_label="gn", catalog=cat,
                         bbox_WSEN=WCI, dest_path=template(tmp_path))
     out = d.fetch_local("2000")
     assert sorted(k.split(".")[2] for k in out) == ["r1i1p1f1", "r2i1p1f1"]
-    single = CMIP6Downloader("tos", source_id="MODEL-A", catalog=cat, bbox_WSEN=WCI,
+    single = CMIPDownloader("tos", source_id="MODEL-A", catalog=cat, bbox_WSEN=WCI,
                              dest_path=template(tmp_path)).fetch_local(slice("2000", "2001"))
     assert single.sizes["time"] == 24
 
 
 def test_dry_run_writes_nothing(stores, tmp_path):
-    d = CMIP6Downloader("tos", source_id="MODEL-A", catalog=stores[0], dest_path=template(tmp_path))
+    d = CMIPDownloader("tos", source_id="MODEL-A", catalog=stores[0], dest_path=template(tmp_path))
     paths = d.download("2000", dry_run=True)
     assert len(paths) == 1 and not paths[0].exists()
 

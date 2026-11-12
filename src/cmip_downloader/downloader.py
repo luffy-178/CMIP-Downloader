@@ -1,4 +1,4 @@
-"""Parallel, resumable download of subsetted CMIP6 data to NetCDF files."""
+"""Parallel, resumable download of subsetted CMIP data to NetCDF files."""
 
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ import pandas as pd
 import xarray as xr
 
 from . import catalog as cat
+from . import esgf
 from .subset import parse_time, subset_bbox, subset_levels, time_index_range, time_keys
 
 log = logging.getLogger(__name__)
 
 DEFAULT_DEST = (
-    "cmip6-data/{source_id}/{experiment_id}/{table_id}/{variable_id}/"
+    "cmip-data/{mip_era}/{source_id}/{experiment_id}/{table_id}/{variable_id}/"
     "{variable_id}_{table_id}_{source_id}_{experiment_id}_{member_id}_{grid_label}"
     "_{region_name}_{period}.nc"
 )
@@ -94,35 +95,63 @@ def group_by_chunk(files: list[_File], chunk_edges: np.ndarray, steps_per_task: 
     return groups
 
 
-class CMIP6Downloader:
-    """Download regional, time-limited subsets of CMIP6 from the cloud mirrors.
+def _main_var(ds: xr.Dataset, variable: str) -> str:
+    """Name of the data variable for a variable id (they differ in a few datasets)."""
+    if variable in ds.data_vars:
+        return variable
+    candidates = [n for n in ds.data_vars if not n.endswith(("_bnds", "_bounds")) and ds[n].ndim >= 2]
+    if not candidates:
+        raise KeyError(f"Variable {variable!r} not found in dataset")
+    return max(candidates, key=lambda n: ds[n].ndim)
+
+
+class CMIPDownloader:
+    """Download regional, time-limited subsets of CMIP3, CMIP5, CMIP6 and CMIP7.
+
+    CMIP6 is read from the cloud mirrors (zarr on Google Cloud or AWS), which
+    is the fastest route. The other phases, and CMIP6 datasets that were never
+    mirrored, are fetched from ESGF through ``intake-esgf``. Facets are always
+    given with their CMIP6 names and translated for the phase.
 
     Parameters
     ----------
-    variables : CMIP6 variable id(s), e.g. ``"tos"`` or ``["thetao", "so"]``.
+    variables : variable id(s), e.g. ``"tos"`` or ``["thetao", "so"]``.
+    mip_era : "CMIP6" (default), "CMIP7", "CMIP5" or "CMIP3".
+    source : "auto" (default), "cloud" or "esgf". "auto" uses the cloud for
+        CMIP6 and falls back to ESGF when the cloud has no match.
     source_id, experiment_id, table_id, member_id, grid_label, activity_id,
     institution_id : facet filters, each a string or list of strings.
         With ``member_id=None`` one member per model run is used (r1i1p1f1
         when it exists); pass ``member_id="all"`` for every member. With
         ``grid_label=None`` the native grid is preferred.
+    frequency : output frequency for the phases without MIP tables (CMIP7,
+        CMIP3) or as an alternative to ``table_id`` in CMIP5.
+    extra_facets : further ESGF search terms in the phase's own vocabulary,
+        e.g. ``{"realm": "ocean"}`` or ``{"variable_branding_suffix": ...}``.
     bbox_WSEN : (west, south, east, north) in degrees, or None for global.
     region_name : label inserted in file names.
     levels : vertical levels to keep (nearest match, in the dataset's units).
     level_range : (min, max) of the vertical coordinate to keep.
-    dest_path : template for output files. Available fields are the facets,
-        ``region_name`` and ``period``.
+    dest_path : template for output files. Available fields are ``mip_era``,
+        the facets, ``region_name`` and ``period``.
     split : "year" (default), "month" or "all" – time span of each file.
-    mirror : "gcs" (Google Cloud) or "aws".
-    max_workers : number of parallel loads.
+    mirror : cloud mirror, "gcs" (Google Cloud) or "aws".
+    max_workers : number of parallel loads/downloads.
     max_task_mb : upper bound on the uncompressed size of one load.
     compress : zlib level for the NetCDF output (0 disables compression).
-    catalog : a pre-loaded or custom catalogue DataFrame (optional).
+    raw_cache : directory for the global files downloaded from ESGF
+        (default: intake-esgf's own cache, ``~/.esgf``).
+    keep_raw : keep those global files after subsetting (default True, so a
+        later request for another region needs no new download).
+    catalog : a pre-loaded or custom cloud catalogue DataFrame (optional).
     """
 
     def __init__(
         self,
         variables,
         *,
+        mip_era: str = "CMIP6",
+        source: str = "auto",
         source_id=None,
         experiment_id=None,
         table_id=None,
@@ -130,6 +159,8 @@ class CMIP6Downloader:
         grid_label=None,
         activity_id=None,
         institution_id=None,
+        frequency=None,
+        extra_facets: dict | None = None,
         bbox_WSEN=None,
         region_name=None,
         levels=None,
@@ -140,13 +171,21 @@ class CMIP6Downloader:
         max_workers: int = 4,
         max_task_mb: float = 1024,
         compress: int = 1,
+        raw_cache=None,
+        keep_raw: bool = True,
         catalog: pd.DataFrame | None = None,
         storage_options: dict | None = None,
         overwrite: bool = False,
         retries: int = 3,
+        esgf_catalog=None,
     ):
         if split not in ("year", "month", "all"):
             raise ValueError("split must be 'year', 'month' or 'all'")
+        if source not in ("auto", "cloud", "esgf"):
+            raise ValueError("source must be 'auto', 'cloud' or 'esgf'")
+        self.mip_era = esgf.check_phase(mip_era)
+        if source == "cloud" and self.mip_era != "CMIP6":
+            raise ValueError(f"The cloud mirrors hold CMIP6 only; use source='esgf' for {self.mip_era}")
         self.bbox = None if bbox_WSEN is None else tuple(float(v) for v in bbox_WSEN)
         self.region_name = region_name or ("global" if self.bbox is None else "region")
         self.levels = levels
@@ -156,6 +195,7 @@ class CMIP6Downloader:
         self.max_workers = max(1, int(max_workers))
         self.max_task_mb = float(max_task_mb)
         self.compress = int(compress)
+        self.keep_raw = keep_raw
         self.overwrite = overwrite
         self.retries = max(1, int(retries))
         if storage_options is not None:
@@ -166,54 +206,97 @@ class CMIP6Downloader:
             self.storage_options = None
 
         all_members = isinstance(member_id, str) and member_id == "all"
-        found = cat.search(
-            catalog,
-            mirror=mirror,
-            variable_id=variables,
-            source_id=source_id,
-            experiment_id=experiment_id,
-            table_id=table_id,
-            member_id=None if all_members else member_id,
-            grid_label=grid_label,
-            activity_id=activity_id,
-            institution_id=institution_id,
-        )
-        self.datasets = cat.select_default(
-            found,
-            member_id="all" if all_members else member_id,
-            grid_label=grid_label,
-        )
-        if self.datasets.empty:
+        member = None if all_members else member_id
+        pick = {"member_id": "all" if all_members else member_id, "grid_label": grid_label}
+        self._esgf = None
+        self._opened: dict = {}
+        self._raw: dict = {}
+        self._last_plan: list = []
+
+        esgf_only = frequency is not None or bool(extra_facets) or esgf_catalog is not None
+        use_cloud = source == "cloud" or (source == "auto" and self.mip_era == "CMIP6" and not esgf_only)
+        datasets = pd.DataFrame()
+        if use_cloud:
+            if frequency is not None or extra_facets:
+                raise ValueError("frequency and extra_facets apply to source='esgf' only")
+            found = cat.search(
+                catalog,
+                mirror=mirror,
+                variable_id=variables,
+                source_id=source_id,
+                experiment_id=experiment_id,
+                table_id=table_id,
+                member_id=member,
+                grid_label=grid_label,
+                activity_id=activity_id,
+                institution_id=institution_id,
+            )
+            datasets = cat.select_default(found, **pick).assign(mip_era="CMIP6")
+            if datasets.empty and source == "auto" and catalog is None:
+                log.info("No match on the cloud mirror, searching ESGF instead")
+                use_cloud = False
+        if not use_cloud:
+            self._esgf = esgf.ESGFSource(
+                self.mip_era,
+                extra_facets=extra_facets,
+                raw_cache=raw_cache,
+                num_threads=self.max_workers,
+                catalog=esgf_catalog,
+                variable_id=variables,
+                source_id=source_id,
+                experiment_id=experiment_id,
+                table_id=table_id,
+                member_id=member,
+                grid_label=grid_label,
+                activity_id=activity_id,
+                institution_id=institution_id,
+                frequency=frequency,
+            )
+            datasets = cat.select_default(self._esgf.datasets, **pick)
+            if not datasets.empty:
+                self._esgf.restrict(datasets)
+        if datasets.empty:
             raise LookupError(
-                "No CMIP6 dataset matches the request. Use cmip6_downloader.search() "
+                f"No {self.mip_era} dataset matches the request. Use cmip_downloader.search() "
                 "to see which facet values are available."
             )
-        self._opened: dict[str, xr.Dataset] = {}
+        self.datasets = datasets
+        self.source = "esgf" if self._esgf is not None else "cloud"
 
     def __repr__(self):
         return (
-            f"<CMIP6Downloader: {len(self.datasets)} dataset(s), "
+            f"<CMIPDownloader: {len(self.datasets)} {self.mip_era} dataset(s) from {self.source}, "
             f"region={self.region_name!r}, bbox={self.bbox}>"
         )
 
     # ------------------------------------------------------------------ planning
-    def _subset(self, zstore: str, variable: str) -> xr.Dataset:
-        """Open a store and apply the spatial and vertical selection (lazy)."""
-        if zstore not in self._opened:
-            ds = open_store(zstore, self.storage_options)
+    def _subset(self, key, opener, variable: str) -> xr.Dataset:
+        """Open a dataset and apply the spatial and vertical selection (lazy)."""
+        if key not in self._opened:
+            ds = opener()
             if self.bbox is not None:
                 ds = subset_bbox(ds, self.bbox)
-            ds = subset_levels(ds, variable, self.levels, self.level_range)
-            self._opened[zstore] = ds
-        return self._opened[zstore]
+            ds = subset_levels(ds, _main_var(ds, variable), self.levels, self.level_range)
+            self._opened[key] = ds
+        return self._opened[key]
 
     def _path(self, facets: dict, period: str) -> Path:
-        return Path(self.dest_path.format(**facets, region_name=self.region_name, period=period))
+        fields = {k: v for k, v in facets.items() if not k.startswith("_")}
+        return Path(self.dest_path.format(**fields, region_name=self.region_name, period=period))
 
     def _plan_dataset(self, row: dict, start, stop) -> tuple[list[_Task], list[Path]]:
-        facets = {k: row[k] for k in cat.FACETS}
-        var = facets["variable_id"]
-        ds = self._subset(row["zstore"], var)
+        facets = {k: row[k] for k in ("mip_era", *cat.FACETS)}
+        if self._esgf is None:
+            zstore = row["zstore"]
+            ds = self._subset(zstore, lambda: open_store(zstore, self.storage_options), facets["variable_id"])
+        else:
+            raw = self._raw.get(row["_row"])
+            if not raw:
+                log.warning("%s: no files in the requested period", ".".join(str(v) for v in facets.values()))
+                return [], []
+            ds = self._subset(tuple(raw), lambda: esgf.open_files(raw), facets["variable_id"])
+        var = _main_var(ds, facets["variable_id"])
+        facets["_var"] = var
 
         if "time" not in ds[var].dims:  # fixed fields (fx, Ofx)
             files = [_File(self._path(facets, "fx"), 0, 0)]
@@ -222,7 +305,7 @@ class CMIP6Downloader:
             keys = time_keys(ds)
             a, b = time_index_range(keys, start, stop)
             if a == b:
-                log.warning("%s: no data in the requested period", row["zstore"])
+                log.warning("%s: no data in the requested period", ".".join(str(v) for v in facets.values()))
                 return [], []
             files = [
                 _File(self._path(facets, label), i, j)
@@ -243,16 +326,24 @@ class CMIP6Downloader:
         return tasks, paths
 
     def plan(self, time=None) -> tuple[list[_Task], list[Path]]:
-        """Work out the loads to run and the complete list of output files."""
+        """Work out the loads to run and the complete list of output files.
+
+        For ESGF this downloads the source files first, because the periods
+        they cover are only known once they are on disk.
+        """
         start, stop = parse_time(time)
+        if self._esgf is not None:
+            self._raw = self._esgf.fetch(start, stop)
         rows = self.datasets.to_dict("records")
         tasks: list[_Task] = []
         paths: list[Path] = []
+        self._last_plan = []
         # Opening a store is a few small requests; do all of them at once.
         with ThreadPoolExecutor(self.max_workers) as pool:
-            for t, p in pool.map(lambda r: self._plan_dataset(r, start, stop), rows):
+            for row, (t, p) in zip(rows, pool.map(lambda r: self._plan_dataset(r, start, stop), rows)):
                 tasks += t
                 paths += p
+                self._last_plan.append((row, p))
         return tasks, paths
 
     # ---------------------------------------------------------------- execution
@@ -279,7 +370,7 @@ class CMIP6Downloader:
 
     def _run(self, task: _Task) -> list[Path]:
         ds = task.ds
-        timed = "time" in ds[task.facets["variable_id"]].dims
+        timed = "time" in ds[task.facets["_var"]].dims
         first, last = task.files[0].start, task.files[-1].stop
         lazy = ds.isel(time=slice(first, last)) if timed else ds
         for attempt in range(1, self.retries + 1):
@@ -307,10 +398,17 @@ class CMIP6Downloader:
         ``"2015-06"``, or ``slice("2015", "2100")``. Files already on disk are
         skipped, so an interrupted download resumes where it stopped.
         """
+        if dry_run and self._esgf is not None:
+            log.info(
+                "%d dataset(s) would be fetched from ESGF; their output files are known "
+                "only once the source files are downloaded",
+                len(self.datasets),
+            )
+            return []
         tasks, paths = self.plan(time)
         todo = sum(len(t.files) for t in tasks)
         log.info("%d file(s) requested, %d to download in %d load(s)", len(paths), todo, len(tasks))
-        if dry_run or not tasks:
+        if dry_run:
             return paths
         done = 0
         with ThreadPoolExecutor(self.max_workers) as pool:
@@ -319,6 +417,10 @@ class CMIP6Downloader:
                 for path in fut.result():
                     done += 1
                     log.info("[%d/%d] %s", done, todo, path)
+        if self._esgf is not None and not self.keep_raw:
+            for key in [k for k in self._opened if isinstance(k, tuple)]:
+                self._opened.pop(key).close()
+            esgf.remove_raw([p for files in self._raw.values() for p in files])
         return paths
 
     def fetch_local(self, time=None):
@@ -328,11 +430,9 @@ class CMIP6Downloader:
         dict keyed by ``source_id.experiment_id.member_id.table_id.variable_id``.
         """
         self.download(time)
-        start, stop = parse_time(time)
         coder = xr.coders.CFDatetimeCoder(use_cftime=True)
         out = {}
-        for row in self.datasets.to_dict("records"):
-            _, paths = self._plan_dataset(row, start, stop)
+        for row, paths in self._last_plan:
             if not paths:
                 continue
             key = ".".join(
@@ -347,3 +447,6 @@ class CMIP6Downloader:
                     data_vars="minimal", coords="minimal", compat="override",
                 )
         return next(iter(out.values())) if len(out) == 1 else out
+
+
+CMIP6Downloader = CMIPDownloader  # name used by version 0.1

@@ -1,4 +1,4 @@
-"""Locate CMIP6 zarr stores through the Pangeo catalogue of the cloud mirrors.
+"""Locate CMIP data: the Pangeo catalogue of the CMIP6 cloud mirrors, or ESGF.
 
 The catalogue is one CSV file per mirror with a row per zarr store. It is
 downloaded once, cached on disk and refreshed when it gets old, so a search
@@ -43,13 +43,13 @@ FACETS = (
 )
 
 GRID_PREFERENCE = ("gn", "gr", "gr1", "gr2", "gm")
-_MEMBER_RE = re.compile(r"(?:s(\d+)-)?r(\d+)i(\d+)p(\d+)f(\d+)")
+_MEMBER_RE = re.compile(r"(?:s(\d+)-)?r(\d+)i(\d+)p(\d+)(?:f(\d+))?")
 
 
 def cache_dir() -> Path:
-    """Directory holding the cached catalogue (override with CMIP6_DOWNLOADER_CACHE)."""
-    root = os.environ.get("CMIP6_DOWNLOADER_CACHE")
-    path = Path(root) if root else Path.home() / ".cache" / "cmip6_downloader"
+    """Directory holding the cached catalogue (override with CMIP_DOWNLOADER_CACHE)."""
+    root = os.environ.get("CMIP_DOWNLOADER_CACHE")
+    path = Path(root) if root else Path.home() / ".cache" / "cmip_downloader"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -108,7 +108,7 @@ def _as_list(value) -> list[str] | None:
 
 
 def member_sort_key(member: str) -> tuple:
-    """Sort r1i1p1f1 before r2i1p1f1 before r10i1p1f1 (plain string sort does not)."""
+    """Sort r1i1p1f1 before r2i1p1f1 before r10i1p1f1 (also CMIP5 style, r1i1p1)."""
     m = _MEMBER_RE.fullmatch(str(member))
     if not m:
         return (1, 0, 0, 0, 0, 0, str(member))
@@ -123,19 +123,32 @@ def _grid_rank(grid: str) -> int:
 def search(
     catalog: pd.DataFrame | None = None,
     *,
+    mip_era: str = "CMIP6",
+    source: str = "auto",
     mirror: str = "gcs",
     latest_only: bool = True,
+    frequency=None,
+    extra_facets: dict | None = None,
     **facets,
 ) -> pd.DataFrame:
-    """Filter the catalogue by facet values.
+    """List the datasets matching the facet values.
 
     Every facet accepts a string or a list of strings, for example
     ``search(variable_id=["tos", "thetao"], source_id="CESM2",
     experiment_id="ssp585", table_id="Omon")``.
+
+    CMIP6 is searched in the cloud catalogue unless ``source="esgf"``; the
+    other phases are searched on ESGF, e.g.
+    ``search(mip_era="CMIP5", variable_id="tos", experiment_id="rcp85")``.
     """
     unknown = set(facets) - set(FACETS)
     if unknown:
         raise TypeError(f"Unknown facet(s) {sorted(unknown)}; valid facets are {FACETS}")
+    if source == "esgf" or str(mip_era).upper() != "CMIP6" or frequency is not None or extra_facets:
+        from .esgf import ESGFSource
+
+        found = ESGFSource(mip_era, extra_facets=extra_facets, frequency=frequency, **facets)
+        return found.datasets.drop(columns="_row")
     df = load_catalog(mirror) if catalog is None else catalog
     mask = pd.Series(True, index=df.index)
     for name, value in facets.items():

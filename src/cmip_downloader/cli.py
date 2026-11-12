@@ -1,4 +1,4 @@
-"""Command line interface: ``cmip6-download search|get|update-catalog``."""
+"""Command line interface: ``cmip-download search|get|update-catalog``."""
 
 from __future__ import annotations
 
@@ -8,23 +8,38 @@ import sys
 
 from . import __version__
 from .catalog import load_catalog, search
-from .downloader import DEFAULT_DEST, CMIP6Downloader
+from .downloader import DEFAULT_DEST, CMIPDownloader
 
 
 def _add_facets(p: argparse.ArgumentParser, required: bool) -> None:
     p.add_argument("-v", "--variable", nargs="+", required=required, help="variable id(s), e.g. tos thetao")
-    p.add_argument("-s", "--source", nargs="+", help="model(s), e.g. CESM2")
+    p.add_argument("-s", "--model", nargs="+", help="model(s) (source_id), e.g. CESM2")
     p.add_argument("-e", "--experiment", nargs="+", help="experiment(s), e.g. historical ssp585")
     p.add_argument("-t", "--table", nargs="+", help="table(s), e.g. Omon Amon day")
     p.add_argument("-m", "--member", nargs="+", help="member(s), e.g. r1i1p1f1, or 'all'")
     p.add_argument("-g", "--grid", nargs="+", help="grid label(s), e.g. gn gr")
-    p.add_argument("--mirror", choices=["gcs", "aws"], default="gcs")
+    p.add_argument("--mip-era", default="CMIP6", choices=["CMIP3", "CMIP5", "CMIP6", "CMIP7"])
+    p.add_argument("--source", default="auto", choices=["auto", "cloud", "esgf"])
+    p.add_argument("--frequency", nargs="+", help="frequency, for CMIP7/CMIP3 (e.g. mon) or CMIP5")
+    p.add_argument("--facet", action="append", default=[], metavar="KEY=VALUE",
+                   help="extra ESGF search term, repeatable (e.g. --facet realm=ocean)")
+    p.add_argument("--mirror", choices=["gcs", "aws"], default="gcs", help="cloud mirror for CMIP6")
+
+
+def _extra(pairs) -> dict | None:
+    out = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--facet expects KEY=VALUE, got {pair!r}")
+        out[key] = value.split(",") if "," in value else value
+    return out or None
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="cmip6-download",
-        description="Fast, subsetting downloader for CMIP6 data from the cloud mirrors.",
+        prog="cmip-download",
+        description="Fast, subsetting downloader for CMIP3, CMIP5, CMIP6 and CMIP7 data.",
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("-q", "--quiet", action="store_true", help="only print warnings")
@@ -46,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--max-task-mb", type=float, default=1024)
     p.add_argument("--compress", type=int, default=1, help="zlib level, 0 to disable")
+    p.add_argument("--raw-cache", help="directory for global files downloaded from ESGF")
+    p.add_argument("--discard-raw", action="store_true", help="delete ESGF source files after subsetting")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="list the files without downloading")
 
@@ -72,15 +89,19 @@ def main(argv=None) -> int:
     if args.command == "search":
         member = _member(args.member)
         df = search(
+            mip_era=args.mip_era,
+            source=args.source,
+            frequency=args.frequency,
+            extra_facets=_extra(args.facet),
             mirror=args.mirror,
             variable_id=args.variable,
-            source_id=args.source,
+            source_id=args.model,
             experiment_id=args.experiment,
             table_id=args.table,
             member_id=None if member == "all" else member,
             grid_label=args.grid,
         )
-        cols = ["source_id", "experiment_id", "member_id", "table_id", "variable_id", "grid_label", "version"]
+        cols = [c for c in ("mip_era",) if c in df.columns] + ["source_id", "experiment_id", "member_id", "table_id", "variable_id", "grid_label", "version"]
         shown = df[cols] if args.limit == 0 else df[cols].head(args.limit)
         if len(shown):
             print(shown.to_string(index=False))
@@ -92,9 +113,15 @@ def main(argv=None) -> int:
         return 2
     time = None if args.time is None else slice(args.time[0], args.time[-1])
     try:
-        dl = CMIP6Downloader(
+        dl = CMIPDownloader(
             args.variable,
-            source_id=args.source,
+            mip_era=args.mip_era,
+            source=args.source,
+            frequency=args.frequency,
+            extra_facets=_extra(args.facet),
+            raw_cache=args.raw_cache,
+            keep_raw=not args.discard_raw,
+            source_id=args.model,
             experiment_id=args.experiment,
             table_id=args.table,
             member_id=_member(args.member),
@@ -111,7 +138,7 @@ def main(argv=None) -> int:
             compress=args.compress,
             overwrite=args.overwrite,
         )
-    except LookupError as err:
+    except (LookupError, ValueError, ImportError) as err:
         print(err, file=sys.stderr)
         return 1
     paths = dl.download(time, dry_run=args.dry_run)

@@ -2,11 +2,11 @@
 
 import logging
 
-from cmip6_downloader import CMIP6Downloader
+from cmip_downloader import CMIPDownloader
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-dl = CMIP6Downloader(
+dl = CMIPDownloader(
     variables=["tos", "zos"],
     source_id=["CESM2", "MPI-ESM1-2-HR"],
     experiment_id=["historical", "ssp585"],

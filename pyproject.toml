@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cmip6-downloader"
+name = "cmip-downloader"
 dynamic = ["version"]
-description = "A lightweight and fast downloader for regional subsets of CMIP6 data from the Google Cloud and AWS mirrors."
+description = "A lightweight and fast downloader for regional subsets of CMIP3, CMIP5, CMIP6 and CMIP7 data, from the cloud mirrors and ESGF."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [{ name = "Hari" }]
-keywords = ["cmip6", "climate", "ocean", "xarray", "zarr", "pangeo"]
+keywords = ["cmip", "cmip5", "cmip6", "cmip7", "esgf", "climate", "ocean", "xarray", "zarr", "pangeo"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -31,17 +31,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+esgf = ["intake-esgf"]
 aws = ["s3fs"]
+all = ["intake-esgf", "s3fs"]
 dev = ["pytest", "ruff"]
 
+[project.urls]
+Repository = "https://github.com/luffy-178/CMIP-Downloader"
+
 [project.scripts]
-cmip6-download = "cmip6_downloader.cli:main"
+cmip-download = "cmip_downloader.cli:main"
 
 [tool.hatch.version]
-path = "src/cmip6_downloader/__init__.py"
+path = "src/cmip_downloader/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cmip6_downloader"]
+packages = ["src/cmip_downloader"]
 
 [tool.ruff]
 line-length = 110
